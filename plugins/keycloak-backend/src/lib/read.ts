@@ -91,10 +91,10 @@ export const parseUser = async (
         email: user.email,
         ...(user.firstName || user.lastName
           ? {
-              displayName: [user.firstName, user.lastName]
-                .filter(Boolean)
-                .join(' '),
-            }
+            displayName: [user.firstName, user.lastName]
+              .filter(Boolean)
+              .join(' '),
+          }
           : {}),
       },
       memberOf: keycloakGroups
@@ -226,11 +226,25 @@ export const readKeycloakRealm = async (
   const kGroups = await Promise.all(
     rawKGroups.map(async g => {
       g.members = (
-        await client.groups.listMembers({
-          id: g.id!,
-          max: options?.userQuerySize,
-          realm: config.realm,
-        })
+        await (async (
+          group: GroupRepresentationWithParent,
+        ): Promise<UserRepresentation[]> => {
+          let first = 0;
+          const qs = options?.userQuerySize || 100;
+          const members: UserRepresentation[] = [];
+          let m: UserRepresentation[] = [];
+          do {
+            m = await client.groups.listMembers({
+              id: group.id!,
+              first: first,
+              max: qs,
+              realm: config.realm,
+            });
+            members.push(...m);
+            first += qs;
+          } while (m.length === qs);
+          return members;
+        })(g)
       )?.map(m => m.username!);
 
       if (isVersion23orHigher) {
@@ -295,10 +309,15 @@ export const readKeycloakRealm = async (
 
   const groups = parsedGroups.map(g => {
     const entity = g.entity;
-    entity.spec.members =
-      g.entity.spec.members?.map(
-        m => parsedUsers.find(p => p.username === m)?.entity.metadata.name!,
-      ) ?? [];
+    entity.spec.members = g.entity.spec.members?.map(m => {
+      const user = parsedUsers.find(p => p.username === m);
+      if (!user) {
+        console.log(`User ${m} not found in users`);
+        return undefined;
+      }
+      return user.entity.metadata.name!;
+    })
+      .filter((m): m is string => m !== undefined) ?? [];
     entity.spec.children =
       g.entity.spec.children?.map(
         c => parsedGroups.find(p => p.name === c)?.entity.metadata.name!,
